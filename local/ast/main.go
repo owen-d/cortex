@@ -15,7 +15,7 @@ func (v visitor) Visit(x promql.Node, xs []promql.Node) (promql.Visitor, error) 
 }
 
 func main() {
-	main2()
+	main1()
 }
 
 func main1() {
@@ -27,14 +27,14 @@ func main1() {
 
 	// out := promql.Tree(expr)
 	// fmt.Println(out)
-	// fmt.Println(expr)
+	fmt.Println(expr)
 
-	f := visitor(func(x promql.Node, xs []promql.Node) error {
-		fmt.Println(x)
-		return nil
-	})
+	// f := visitor(func(x promql.Node, xs []promql.Node) error {
+	// 	fmt.Println(x)
+	// 	return nil
+	// })
 
-	promql.Walk(f, expr, nil)
+	// promql.Walk(f, expr, nil)
 
 }
 
