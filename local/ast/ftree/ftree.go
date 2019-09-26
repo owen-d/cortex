@@ -10,44 +10,53 @@ type ASTMapper interface {
 	Map(node promql.Node) (promql.Node, error)
 }
 
-type MapperFunc = func(node promql.Node) (promql.Node, error)
+type MapperFunc func(node promql.Node) (promql.Node, error)
 
-type FuncsMapper struct {
-	fns []MapperFunc
+func (fn MapperFunc) Map(node promql.Node) (promql.Node, error) {
+	return fn(node)
 }
 
-func (m *FuncsMapper) Map(node promql.Node) (promql.Node, error) {
-	var mapped promql.Node = node
+type MultiMapper struct {
+	mappers []ASTMapper
+}
+
+func (m *MultiMapper) Map(node promql.Node) (promql.Node, error) {
+	var result promql.Node = node
 	var err error
 
-	if len(m.fns) == 0 {
-		return nil, errors.New("FuncsMapper: No mapper functions registered")
+	if len(m.mappers) == 0 {
+		return nil, errors.New("MultiMapper: No mappers registered")
 	}
 
-	for _, f := range m.fns {
-		mapped, err = f(mapped)
+	for _, x := range m.mappers {
+		result, err = x.Map(result)
 		if err != nil {
 			return nil, err
 		}
 	}
-	return mapped, nil
+	return result, nil
+
 }
 
 // since registered functions are applied in the order they're registered, it's advised to register them
 // in decreasing priority and only operate on nodes that each function cares about, defaulting to CloneNode.
-func (m *FuncsMapper) Register(fns ...MapperFunc) {
-	m.fns = append(m.fns, fns...)
+func (m *MultiMapper) Register(xs ...ASTMapper) {
+	m.mappers = append(m.mappers, xs...)
 }
 
-func NewFuncsMapper(fs ...MapperFunc) *FuncsMapper {
-	m := &FuncsMapper{}
-	m.Register(fs...)
+func NewMultiMapper(xs ...ASTMapper) *MultiMapper {
+	m := &MultiMapper{}
+	m.Register(xs...)
 	return m
 }
 
 // Transform runs a mapper against an AST, producing the new mapped AST
 func Transform(m ASTMapper, n promql.Node) (promql.Node, error) {
-	return m.Map(n)
+	cloned, err := CloneNode(n)
+	if err != nil {
+		return nil, err
+	}
+	return m.Map(cloned)
 }
 
 // helper function to clone a node.
