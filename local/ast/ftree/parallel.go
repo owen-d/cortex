@@ -40,8 +40,17 @@ func CanParallel(node promql.Node) bool {
 		return false
 
 	case *promql.Call:
-		// flagging all functions as non-parallel for expediency.
-		return false
+		if !FuncParallel(n.Func) {
+			return false
+		}
+
+		for _, e := range n.Args {
+			if !CanParallel(e) {
+				return false
+			}
+		}
+
+		return true
 
 	case *promql.SubqueryExpr:
 		return CanParallel(n.Expr)
@@ -65,4 +74,9 @@ func CanParallel(node promql.Node) bool {
 	}
 
 	return false
+}
+
+func FuncParallel(f *promql.Function) bool {
+	// flagging all functions as parallel for expediency -- this is certainly not correct (i.e. avg).
+	return true
 }

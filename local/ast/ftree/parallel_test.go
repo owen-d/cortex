@@ -85,3 +85,24 @@ func TestCanParallel(t *testing.T) {
 		})
 	}
 }
+
+func TestCanParallel_String(t *testing.T) {
+	var testExpr = []struct {
+		input    string
+		expected bool
+	}{
+		{
+			`sum by (foo) (rate(bar1{baz="blip"}[1m]))`,
+			true,
+		},
+	}
+
+	for i, c := range testExpr {
+		t.Run(fmt.Sprintf("[%d]", i), func(t *testing.T) {
+			expr, err := promql.ParseExpr(c.input)
+			require.Nil(t, err)
+			res := CanParallel(expr)
+			require.Equal(t, c.expected, res)
+		})
+	}
+}
