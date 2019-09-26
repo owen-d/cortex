@@ -54,6 +54,36 @@ func TestCloneNode(t *testing.T) {
 	}
 }
 
+func TestCloneNode_String(t *testing.T) {
+	var testExpr = []struct {
+		input    string
+		expected string
+	}{
+		{
+			`rate(http_requests_total{cluster="us-central1"}[1m])`,
+			`rate(http_requests_total{cluster="us-central1"}[1m])`,
+		},
+		{
+			`sum(
+sum(rate(http_requests_total{cluster="us-central1"}[1m]))
+/
+sum(rate(http_requests_total{cluster="ops-tools1"}[1m]))
+)`,
+			`sum(sum(rate(http_requests_total{cluster="us-central1"}[1m])) / sum(rate(http_requests_total{cluster="ops-tools1"}[1m])))`,
+		},
+	}
+
+	for i, c := range testExpr {
+		t.Run(fmt.Sprintf("[%d]", i), func(t *testing.T) {
+			expr, err := promql.ParseExpr(c.input)
+			require.Nil(t, err)
+			res, err := CloneNode(expr)
+			require.Nil(t, err)
+			require.Equal(t, c.expected, res.String())
+		})
+	}
+}
+
 func mustLabelMatcher(mt labels.MatchType, name, val string) *labels.Matcher {
 	m, err := labels.NewMatcher(mt, name, val)
 	if err != nil {

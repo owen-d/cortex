@@ -16,7 +16,30 @@ func TestShardSummer(t *testing.T) {
 		{
 			3,
 			`sum by(foo) (rate(bar1{baz="blip"}[1m]))`,
-			`sum by(foo) (rate(bar1{__cortex_shard__="0_of_3",baz="blip"}[1m] or bar1{__cortex_shard__="1_of_3",baz="blip"}[1m] or bar1{__cortex_shard__="2_of_3",baz="blip"}[1m]))`,
+			`sum by(foo) (
+			  sum by(foo) (rate(bar1{__cortex_shard__="0_of_3",baz="blip"}[1m])) or
+			  sum by(foo) (rate(bar1{__cortex_shard__="1_of_3",baz="blip"}[1m])) or
+			  sum by(foo) (rate(bar1{__cortex_shard__="2_of_3",baz="blip"}[1m]))
+			)`,
+		},
+		{
+			2,
+			`sum(
+				sum by (foo) (rate(bar1{baz="blip"}[1m]))
+				/
+				sum by (foo) (rate(foo{baz="blip"}[1m]))
+			)`,
+			`sum(
+			  sum by(foo) (
+				sum by(foo) (rate(bar1{__cortex_shard__="0_of_2",baz="blip"}[1m])) or
+				sum by(foo) (rate(bar1{__cortex_shard__="1_of_2",baz="blip"}[1m]))
+			  )
+			  /
+			  sum by(foo) (
+				sum by(foo) (rate(foo{__cortex_shard__="0_of_2",baz="blip"}[1m])) or
+				sum by(foo) (rate(foo{__cortex_shard__="1_of_2",baz="blip"}[1m]))
+			  )
+			)`,
 		},
 	}
 
@@ -27,7 +50,11 @@ func TestShardSummer(t *testing.T) {
 			require.Nil(t, err)
 			res, err := summer.Map(expr)
 			require.Nil(t, err)
-			require.Equal(t, c.expected, res.String())
+
+			expected, err := promql.ParseExpr(c.expected)
+			require.Nil(t, err)
+
+			require.Equal(t, expected.String(), res.String())
 		})
 	}
 }

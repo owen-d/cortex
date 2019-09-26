@@ -33,10 +33,24 @@ func ShardSummerFunc(shards int) MapperFunc {
 
 // ShardSummer expands a query AST by sharding and re-summing when possible
 func (summer *ShardSummer) Map(node promql.Node) (promql.Node, error) {
+	return summer.mapWithOpts(MappingOpts{}, node)
+}
+
+type MappingOpts struct {
+	isParallel bool
+	// curShard's ptr denotes existence. This helps prevent selectors in non-sum queries from sharding themselves as they'll always register true for isParallel.
+	curShard *int
+}
+
+// mapWithOpts carries information about whether the node is in a subtree that is a parallelism candidate.
+func (summer *ShardSummer) mapWithOpts(opts MappingOpts, node promql.Node) (promql.Node, error) {
+	// since mapWithOpts is called recursively, the new subtree may be parallelizable even if its parent is not
+	opts.isParallel = opts.isParallel || CanParallel(node)
+
 	switch n := node.(type) {
 	case promql.Expressions:
 		for i, e := range n {
-			if mapped, err := summer.Map(e); err != nil {
+			if mapped, err := summer.mapWithOpts(opts, e); err != nil {
 				return nil, err
 			} else {
 				n[i] = mapped.(promql.Expr)
@@ -45,7 +59,11 @@ func (summer *ShardSummer) Map(node promql.Node) (promql.Node, error) {
 		return n, nil
 
 	case *promql.AggregateExpr:
-		if mapped, err := summer.Map(n.Expr); err != nil {
+		if opts.isParallel {
+			return summer.shardSum(n)
+		}
+
+		if mapped, err := summer.mapWithOpts(opts, n.Expr); err != nil {
 			return nil, err
 		} else {
 			n.Expr = mapped.(promql.Expr)
@@ -53,13 +71,13 @@ func (summer *ShardSummer) Map(node promql.Node) (promql.Node, error) {
 		return n, nil
 
 	case *promql.BinaryExpr:
-		if lhs, err := CloneNode(n.LHS); err != nil {
+		if lhs, err := summer.mapWithOpts(opts, n.LHS); err != nil {
 			return nil, err
 		} else {
 			n.LHS = lhs.(promql.Expr)
 		}
 
-		if rhs, err := CloneNode(n.RHS); err != nil {
+		if rhs, err := summer.mapWithOpts(opts, n.RHS); err != nil {
 			return nil, err
 		} else {
 			n.RHS = rhs.(promql.Expr)
@@ -68,7 +86,7 @@ func (summer *ShardSummer) Map(node promql.Node) (promql.Node, error) {
 
 	case *promql.Call:
 		for i, e := range n.Args {
-			if mapped, err := summer.Map(e); err != nil {
+			if mapped, err := summer.mapWithOpts(opts, e); err != nil {
 				return nil, err
 			} else {
 				n.Args[i] = mapped.(promql.Expr)
@@ -77,7 +95,7 @@ func (summer *ShardSummer) Map(node promql.Node) (promql.Node, error) {
 		return n, nil
 
 	case *promql.SubqueryExpr:
-		if mapped, err := summer.Map(n.Expr); err != nil {
+		if mapped, err := summer.mapWithOpts(opts, n.Expr); err != nil {
 			return nil, err
 		} else {
 			n.Expr = mapped.(promql.Expr)
@@ -85,7 +103,7 @@ func (summer *ShardSummer) Map(node promql.Node) (promql.Node, error) {
 		return n, nil
 
 	case *promql.ParenExpr:
-		if mapped, err := summer.Map(n.Expr); err != nil {
+		if mapped, err := summer.mapWithOpts(opts, n.Expr); err != nil {
 			return nil, err
 		} else {
 			n.Expr = mapped.(promql.Expr)
@@ -93,7 +111,7 @@ func (summer *ShardSummer) Map(node promql.Node) (promql.Node, error) {
 		return n, nil
 
 	case *promql.UnaryExpr:
-		if mapped, err := summer.Map(n.Expr); err != nil {
+		if mapped, err := summer.mapWithOpts(opts, n.Expr); err != nil {
 			return nil, err
 		} else {
 			n.Expr = mapped.(promql.Expr)
@@ -101,7 +119,7 @@ func (summer *ShardSummer) Map(node promql.Node) (promql.Node, error) {
 		return n, nil
 
 	case *promql.EvalStmt:
-		if mapped, err := summer.Map(n.Expr); err != nil {
+		if mapped, err := summer.mapWithOpts(opts, n.Expr); err != nil {
 			return nil, err
 		} else {
 			n.Expr = mapped.(promql.Expr)
@@ -112,81 +130,100 @@ func (summer *ShardSummer) Map(node promql.Node) (promql.Node, error) {
 		return n, nil
 
 	case *promql.VectorSelector:
-		return shardVectorSelector(summer.shards, n)
+		if opts.isParallel && opts.curShard != nil {
+			return shardVectorSelector(*opts.curShard, summer.shards, n)
+		} else {
+			return n, nil
+		}
 
 	case *promql.MatrixSelector:
-		return shardMatrixSelector(summer.shards, n)
+		if opts.isParallel && opts.curShard != nil {
+			return shardMatrixSelector(*opts.curShard, summer.shards, n)
+		} else {
+			return n, nil
+		}
 
 	default:
-		panic(errors.Errorf("CloneNode: unhandled node type %T", node))
+		panic(errors.Errorf("ShardSummer: unhandled node type %T", node))
 	}
 }
 
-func shardVectorSelector(shards int, selector *promql.VectorSelector) (promql.Node, error) {
-	if shards < 1 {
-		return selector, nil
+func (summer *ShardSummer) shardSum(expr *promql.AggregateExpr) (promql.Node, error) {
+	if summer.shards < 2 {
+		return expr, nil
 	}
 
-	selectors := make([]*promql.VectorSelector, 0, shards)
+	subSums := make([]*promql.AggregateExpr, 0, summer.shards)
 
-	for i := 0; i < shards; i++ {
-		shardMatcher, err := labels.NewMatcher(labels.MatchEqual, SHARD_LABEL, fmt.Sprintf("%d_of_%d", i, shards))
+	for i := 0; i < summer.shards; i++ {
+		cloned, err := CloneNode(expr.Expr)
 		if err != nil {
 			return nil, err
 		}
-		selectors = append(selectors, &promql.VectorSelector{
-			Name:   selector.Name,
-			Offset: selector.Offset,
-			LabelMatchers: append(
-				[]*labels.Matcher{shardMatcher},
-				selector.LabelMatchers...,
-			),
+
+		sharded, err := summer.mapWithOpts(MappingOpts{
+			curShard: &i,
+		}, cloned)
+		if err != nil {
+			return nil, err
+		}
+
+		subSums = append(subSums, &promql.AggregateExpr{
+			Op:       expr.Op,
+			Expr:     sharded.(promql.Expr),
+			Param:    expr.Param,
+			Grouping: expr.Grouping,
+			Without:  expr.Without,
 		})
 	}
 
-	var result promql.Expr = selectors[0]
-	for i := 1; i < len(selectors); i++ {
-		result = &promql.BinaryExpr{
+	var combinedSums promql.Expr = subSums[0]
+	for i := 1; i < len(subSums); i++ {
+		combinedSums = &promql.BinaryExpr{
 			Op:  promql.ItemLOR,
-			LHS: result,
-			RHS: selectors[i],
+			LHS: combinedSums,
+			RHS: subSums[i],
 		}
 	}
 
-	return result, nil
+	return &promql.AggregateExpr{
+		Op:       expr.Op,
+		Expr:     combinedSums,
+		Param:    expr.Param,
+		Grouping: expr.Grouping,
+		Without:  expr.Without,
+	}, nil
 }
 
-func shardMatrixSelector(shards int, selector *promql.MatrixSelector) (promql.Node, error) {
-	if shards < 1 {
-		return selector, nil
+func shardVectorSelector(curshard, shards int, selector *promql.VectorSelector) (promql.Node, error) {
+	shardMatcher, err := labels.NewMatcher(labels.MatchEqual, SHARD_LABEL, fmt.Sprintf("%d_of_%d", curshard, shards))
+	if err != nil {
+		return nil, err
 	}
 
-	selectors := make([]*promql.MatrixSelector, 0, shards)
+	return &promql.VectorSelector{
+		Name:   selector.Name,
+		Offset: selector.Offset,
+		LabelMatchers: append(
+			[]*labels.Matcher{shardMatcher},
+			selector.LabelMatchers...,
+		),
+	}, nil
+}
 
-	for i := 0; i < shards; i++ {
-		shardMatcher, err := labels.NewMatcher(labels.MatchEqual, SHARD_LABEL, fmt.Sprintf("%d_of_%d", i, shards))
-		if err != nil {
-			return nil, err
-		}
-		selectors = append(selectors, &promql.MatrixSelector{
-			Name:   selector.Name,
-			Range:  selector.Range,
-			Offset: selector.Offset,
-			LabelMatchers: append(
-				[]*labels.Matcher{shardMatcher},
-				selector.LabelMatchers...,
-			),
-		})
+func shardMatrixSelector(curshard, shards int, selector *promql.MatrixSelector) (promql.Node, error) {
+	shardMatcher, err := labels.NewMatcher(labels.MatchEqual, SHARD_LABEL, fmt.Sprintf("%d_of_%d", curshard, shards))
+	if err != nil {
+		return nil, err
 	}
 
-	var result promql.Expr = selectors[0]
-	for i := 1; i < len(selectors); i++ {
-		result = &promql.BinaryExpr{
-			Op:  promql.ItemLOR,
-			LHS: result,
-			RHS: selectors[i],
-		}
-	}
-
-	return result, nil
+	return &promql.MatrixSelector{
+		Name:   selector.Name,
+		Range:  selector.Range,
+		Offset: selector.Offset,
+		LabelMatchers: append(
+			[]*labels.Matcher{shardMatcher},
+			selector.LabelMatchers...,
+		),
+	}, nil
 }
