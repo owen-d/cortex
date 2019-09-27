@@ -41,6 +41,25 @@ func TestShardSummer(t *testing.T) {
 			  )
 			)`,
 		},
+		// This is currently redundant: sums split into sharded versions, including summed sums.
+		{
+			2,
+			`sum(sum by(foo) (rate(bar1{baz="blip"}[1m])))`,
+			`sum(
+			  sum(
+				sum by(foo) (
+				  sum by(foo) (rate(bar1{__cortex_shard__="0_of_2",baz="blip"}[1m])) or
+				  sum by(foo) (rate(bar1{__cortex_shard__="1_of_2",baz="blip"}[1m]))
+				)
+			  ) or
+			  sum(
+				sum by(foo) (
+				  sum by(foo) (rate(bar1{__cortex_shard__="0_of_2",baz="blip"}[1m])) or
+				  sum by(foo) (rate(bar1{__cortex_shard__="1_of_2",baz="blip"}[1m]))
+				)
+			  )
+			)`,
+		},
 	}
 
 	for i, c := range testExpr {
