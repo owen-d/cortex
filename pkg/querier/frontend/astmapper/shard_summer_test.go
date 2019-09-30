@@ -1,4 +1,4 @@
-package ftree
+package astmapper
 
 import (
 	"fmt"
@@ -64,7 +64,7 @@ func TestShardSummer(t *testing.T) {
 
 	for i, c := range testExpr {
 		t.Run(fmt.Sprintf("[%d]", i), func(t *testing.T) {
-			summer := NewShardSummer(c.shards)
+			summer := NewShardSummer(c.shards, nil)
 			expr, err := promql.ParseExpr(c.input)
 			require.Nil(t, err)
 			res, err := summer.Map(expr)

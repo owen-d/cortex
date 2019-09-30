@@ -1,4 +1,4 @@
-package ftree
+package astmapper
 
 import (
 	"github.com/pkg/errors"

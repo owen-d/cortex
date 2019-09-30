@@ -1,4 +1,4 @@
-package ftree
+package astmapper
 
 import (
 	"fmt"
@@ -12,21 +12,24 @@ const (
 	SHARD_LABEL    = "__cortex_shard__"
 )
 
+type squasher = func(promql.Node) (promql.Expr, error)
+
 type ShardSummer struct {
 	shards int
+	squash squasher
 }
 
-func NewShardSummer(shards int) *ShardSummer {
+func NewShardSummer(shards int, squasher func(promql.Node) (promql.Expr, error)) *ShardSummer {
 	if shards == 0 {
 		shards = DEFAULT_SHARDS
 	}
 
-	return &ShardSummer{shards}
+	return &ShardSummer{shards, squasher}
 }
 
 // a MapperFunc adapter
-func ShardSummerFunc(shards int) MapperFunc {
-	summer := NewShardSummer(shards)
+func ShardSummerFunc(shards int, squash squasher) MapperFunc {
+	summer := NewShardSummer(shards, squash)
 
 	return summer.Map
 }
@@ -149,11 +152,12 @@ func (summer *ShardSummer) mapWithOpts(opts MappingOpts, node promql.Node) (prom
 }
 
 func (summer *ShardSummer) shardSum(expr *promql.AggregateExpr) (promql.Node, error) {
+
 	if summer.shards < 2 {
 		return expr, nil
 	}
 
-	subSums := make([]*promql.AggregateExpr, 0, summer.shards)
+	subSums := make([]promql.Expr, 0, summer.shards)
 
 	for i := 0; i < summer.shards; i++ {
 		cloned, err := CloneNode(expr.Expr)
@@ -168,13 +172,26 @@ func (summer *ShardSummer) shardSum(expr *promql.AggregateExpr) (promql.Node, er
 			return nil, err
 		}
 
-		subSums = append(subSums, &promql.AggregateExpr{
+		var subSum promql.Expr = &promql.AggregateExpr{
 			Op:       expr.Op,
 			Expr:     sharded.(promql.Expr),
 			Param:    expr.Param,
 			Grouping: expr.Grouping,
 			Without:  expr.Without,
-		})
+		}
+
+		if summer.squash != nil {
+			subSum, err = Squash(subSum)
+		}
+
+		if err != nil {
+			return nil, err
+		}
+
+		subSums = append(subSums,
+			subSum,
+		)
+
 	}
 
 	var combinedSums promql.Expr = subSums[0]
@@ -187,12 +204,13 @@ func (summer *ShardSummer) shardSum(expr *promql.AggregateExpr) (promql.Node, er
 	}
 
 	return &promql.AggregateExpr{
-		Op:       expr.Op,
-		Expr:     combinedSums,
-		Param:    expr.Param,
-		Grouping: expr.Grouping,
-		Without:  expr.Without,
-	}, nil
+			Op:       expr.Op,
+			Expr:     combinedSums,
+			Param:    expr.Param,
+			Grouping: expr.Grouping,
+			Without:  expr.Without,
+		},
+		nil
 }
 
 func shardVectorSelector(curshard, shards int, selector *promql.VectorSelector) (promql.Node, error) {
