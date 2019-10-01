@@ -23,8 +23,8 @@ Ideally the promql.Engine could be an interface instead of a concrete type, allo
 */
 
 const (
-	QUERY_LABEL  = "__cortex_query__"
-	QUERY_METRIC = "__embedded_query__"
+	QUERY_LABEL         = "__cortex_query__"
+	EMBEDDED_QUERY_FLAG = "__embedded_query__"
 )
 
 // Squash reduces an AST into a single vector or matrix query which can be hijacked by a Queryable impl. The important part is that return types align.
@@ -40,7 +40,7 @@ func Squash(node promql.Node) (promql.Expr, error) {
 	}
 
 	return &promql.MatrixSelector{
-		Name:          QUERY_METRIC,
+		Name:          EMBEDDED_QUERY_FLAG,
 		Range:         time.Minute,
 		LabelMatchers: []*labels.Matcher{embedded_query},
 	}, nil
