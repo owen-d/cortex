@@ -3,17 +3,16 @@ package astmapper
 import (
 	"context"
 	"encoding/hex"
+	"github.com/cortexproject/cortex/pkg/querier/frontend/astmapper/manager"
 	"github.com/pkg/errors"
 	"github.com/prometheus/prometheus/pkg/labels"
 	"github.com/prometheus/prometheus/promql"
 	"github.com/prometheus/prometheus/storage"
 )
 
-type downstreamQuery = func(string) (promql.Query, error)
-
 // DownstreamQueryable is a wrapper for and implementor of the Queryable interface.
 type DownstreamQueryable struct {
-	downstream downstreamQuery
+	downstream manager.QueryManager
 	queryable  storage.Queryable
 }
 
@@ -31,7 +30,7 @@ func (q *DownstreamQueryable) Querier(ctx context.Context, mint, maxt int64) (st
 type downstreamQuerier struct {
 	storage.Querier
 	ctx        context.Context
-	downstream downstreamQuery
+	downstream manager.QueryManager
 }
 
 // Select returns a set of series that matches the given label matchers.
@@ -54,7 +53,7 @@ func (q *downstreamQuerier) handleEmbeddedQuery(encoded string) (storage.SeriesS
 		return nil, nil, err
 	}
 
-	query, err := q.downstream(string(decoded))
+	query, err := q.downstream.Query(string(decoded))
 	if err != nil {
 		return nil, nil, err
 	}
