@@ -3,16 +3,20 @@ package astmapper
 import (
 	"context"
 	"encoding/hex"
-	"github.com/cortexproject/cortex/pkg/querier/frontend/astmapper/manager"
 	"github.com/pkg/errors"
 	"github.com/prometheus/prometheus/pkg/labels"
 	"github.com/prometheus/prometheus/promql"
 	"github.com/prometheus/prometheus/storage"
 )
 
+// QueryManager is an agnostic interface for turning a stringified promql query into a promql.Query
+type QueryManager interface {
+	Query(string) (promql.Query, error)
+}
+
 // DownstreamQueryable is a wrapper for and implementor of the Queryable interface.
 type DownstreamQueryable struct {
-	downstream manager.QueryManager
+	downstream QueryManager
 	queryable  storage.Queryable
 }
 
@@ -30,7 +34,7 @@ func (q *DownstreamQueryable) Querier(ctx context.Context, mint, maxt int64) (st
 type downstreamQuerier struct {
 	storage.Querier
 	ctx        context.Context
-	downstream manager.QueryManager
+	downstream QueryManager
 }
 
 // Select returns a set of series that matches the given label matchers.
