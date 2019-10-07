@@ -1,46 +1,57 @@
-package astmapper
+package frontend
 
 import (
 	"context"
 	"encoding/hex"
+	"github.com/cortexproject/cortex/pkg/querier/astmapper"
+	"github.com/cortexproject/cortex/pkg/querier/frontend"
 	"github.com/pkg/errors"
 	"github.com/prometheus/prometheus/pkg/labels"
 	"github.com/prometheus/prometheus/promql"
 	"github.com/prometheus/prometheus/storage"
+	"github.com/weaveworks/common/httpgrpc/server"
+	"net/http"
 )
 
-// QueryManager is an agnostic interface for turning a stringified promql query into a promql.Query
-type QueryManager interface {
-	Query(string) (promql.Query, error)
+type QueryDispatcher interface {
+	// Same type signature as frontend.RoundTripGRPC
+	Dispatch(ctx context.Context, req *ProcessRequest) (*ProcessResponse, error)
+}
+
+func (f *Frontend) Dispatch(ctx context.Context, req *ProcessRequest) (*ProcessResponse, error) {
+	return f.RoundTripGRPC(ctx, req)
 }
 
 // DownstreamQueryable is a wrapper for and implementor of the Queryable interface.
 type DownstreamQueryable struct {
-	downstream QueryManager
-	queryable  storage.Queryable
+	storage.Queryable
+	dispatcher QueryDispatcher
+	req        *http.Request
 }
 
 func (q *DownstreamQueryable) Querier(ctx context.Context, mint, maxt int64) (storage.Querier, error) {
-	querier, err := q.queryable.Querier(ctx, mint, maxt)
+	querier, err := q.Queryable.Querier(ctx, mint, maxt)
 
 	if err != nil {
 		return nil, err
 	}
 
-	return &downstreamQuerier{querier, ctx, q.downstream}, nil
+	return &downstreamQuerier{querier, ctx, q.dispatcher, mint, maxt, q.req}, nil
 }
 
 // downstreamQuerier is a wrapper and implementor of the Querier interface
 type downstreamQuerier struct {
-	storage.Querier
-	ctx        context.Context
-	downstream QueryManager
+	storage.Querier // querier will handle non embedded requests (non reducible matrices)
+	ctx             context.Context
+	dispatcher      QueryDispatcher
+	mint, maxt      int64
+	req             *http.Request
 }
 
 // Select returns a set of series that matches the given label matchers.
 func (q *downstreamQuerier) Select(sp *storage.SelectParams, matchers ...*labels.Matcher) (storage.SeriesSet, storage.Warnings, error) {
 	for _, matcher := range matchers {
-		if matcher.Name == EMBEDDED_QUERY_FLAG {
+		if matcher.Name == astmapper.EMBEDDED_QUERY_FLAG {
 			// this is an embedded query
 			return q.handleEmbeddedQuery(matcher.Value)
 		}
@@ -57,13 +68,16 @@ func (q *downstreamQuerier) handleEmbeddedQuery(encoded string) (storage.SeriesS
 		return nil, nil, err
 	}
 
-	query, err := q.downstream.Query(string(decoded))
+	grpcReq, err := server.HTTPRequest(q.req)
 	if err != nil {
 		return nil, nil, err
 	}
-	defer query.Close()
 
-	res := query.Exec(q.ctx)
+	req := &frontend.ProcessRequest{
+		HttpRequest: grpcReq,
+	}
+
+	q.frontend.enqueue(req)
 
 	if res.Err != nil {
 		return nil, res.Warnings, res.Err

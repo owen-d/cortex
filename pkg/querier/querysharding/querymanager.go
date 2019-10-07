@@ -4,7 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"github.com/cortexproject/cortex/pkg/querier/frontend/astmapper"
+	"github.com/cortexproject/cortex/pkg/querier/astmapper"
+	"github.com/cortexproject/cortex/pkg/querier/frontend"
 	"github.com/pkg/errors"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/promql"
@@ -17,44 +18,41 @@ import (
 	"time"
 )
 
-// pulled from prometheus api pkg
 var (
+	// pulled from prometheus api pkg
 	minTime = time.Unix(math.MinInt64/1000+62135596801, 0).UTC()
 	maxTime = time.Unix(math.MaxInt64/1000-62135596801, 999999999).UTC()
 
+	// pulled from prometheus api pkg
 	minTimeFormatted = minTime.Format(time.RFC3339Nano)
 	maxTimeFormatted = maxTime.Format(time.RFC3339Nano)
 )
 
-type DownstreamQueryManager struct {
-	QueryEngine *promql.Engine
-	Queryable   storage.Queryable
-	maxInflight int
-	inflight    chan struct{}
-	now         func() time.Time
+type ParallelQueryManager struct {
+	queryEngine *promql.Engine
+	queryable   storage.Queryable
 	astMapper   astmapper.ASTMapper
 	passthrough http.RoundTripper
+	frontend    *frontend.Frontend
 }
 
-func NewDownstreamQueryManager(
+func NewParallelQueryManager(
 	engine *promql.Engine,
 	queryable storage.Queryable,
-	maxInflight int,
-	now func() time.Time,
 	astMapper astmapper.ASTMapper,
-) *DownstreamQueryManager {
-	return &DownstreamQueryManager{
-		QueryEngine: engine,
-		Queryable:   queryable,
-		maxInflight: maxInflight,
-		inflight:    make(chan struct{}, maxInflight),
-		now:         now,
+	frontend *frontend.Frontend,
+) *ParallelQueryManager {
+	return &ParallelQueryManager{
+		queryEngine: engine,
+		queryable:   queryable,
 		astMapper:   astMapper,
+		frontend:    frontend,
 	}
+
 }
 
 // impls http.RoundTripper
-func (m *DownstreamQueryManager) RoundTrip(r *http.Request) (*http.Response, error) {
+func (m *ParallelQueryManager) RoundTrip(r *http.Request) (*http.Response, error) {
 	var ctx context.Context
 	var query promql.Query
 	var err error
@@ -72,6 +70,8 @@ func (m *DownstreamQueryManager) RoundTrip(r *http.Request) (*http.Response, err
 	if err != nil {
 		return nil, err
 	}
+
+	// build query & exec
 
 	res := query.Exec(ctx)
 	if res.Err != nil {
@@ -96,7 +96,7 @@ func (m *DownstreamQueryManager) RoundTrip(r *http.Request) (*http.Response, err
 }
 
 // lifted from prometheus api internals
-func (m *DownstreamQueryManager) parseInstantQuery(r *http.Request) (context.Context, promql.Query, error) {
+func (m *ParallelQueryManager) parseInstantQuery(r *http.Request) (context.Context, promql.Query, error) {
 	var ts time.Time
 	if t := r.FormValue("time"); t != "" {
 		var err error
@@ -118,7 +118,7 @@ func (m *DownstreamQueryManager) parseInstantQuery(r *http.Request) (context.Con
 		ctx, _ = context.WithTimeout(ctx, timeout)
 	}
 
-	qry, err := m.QueryEngine.NewInstantQuery(m.Queryable, r.FormValue("query"), ts)
+	qry, err := m.queryEngine.NewInstantQuery(m.queryable, r.FormValue("query"), ts)
 	if err != nil {
 		return nil, nil, errors.Wrapf(err, "invalid parameter 'query'")
 	}
@@ -127,7 +127,7 @@ func (m *DownstreamQueryManager) parseInstantQuery(r *http.Request) (context.Con
 }
 
 // lifted from prometheus api internals
-func (m *DownstreamQueryManager) parseRangeQuery(r *http.Request) (ctx context.Context, query promql.Query, err error) {
+func (m *ParallelQueryManager) parseRangeQuery(r *http.Request) (ctx context.Context, query promql.Query, err error) {
 	start, err := parseTime(r.FormValue("start"))
 	if err != nil {
 		return nil, nil, errors.Wrapf(err, "invalid parameter 'start'")
@@ -165,7 +165,7 @@ func (m *DownstreamQueryManager) parseRangeQuery(r *http.Request) (ctx context.C
 		ctx, _ = context.WithTimeout(ctx, timeout)
 	}
 
-	qry, err := m.QueryEngine.NewRangeQuery(m.Queryable, r.FormValue("query"), start, end, step)
+	qry, err := m.queryEngine.NewRangeQuery(m.queryable, r.FormValue("query"), start, end, step)
 	if err != nil {
 		return nil, nil, errors.Errorf("Bad query")
 	}

@@ -1,4 +1,4 @@
-package astmapper
+package frontend
 
 import (
 	"testing"
