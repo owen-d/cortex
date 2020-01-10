@@ -218,10 +218,6 @@ func (t *Cortex) stopDistributor() (err error) {
 }
 
 func (t *Cortex) initQuerier(cfg *Config) (err error) {
-	t.worker, err = frontend.NewWorker(cfg.Worker, httpgrpc_server.NewServer(t.server.HTTPServer.Handler), util.Logger)
-	if err != nil {
-		return
-	}
 
 	var store chunkstore.ChunkStore
 
