@@ -11,7 +11,6 @@ import (
 
 var (
 	configFile string
-	outFile    string
 )
 
 func init() {

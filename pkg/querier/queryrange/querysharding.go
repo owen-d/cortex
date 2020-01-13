@@ -14,10 +14,6 @@ import (
 	"github.com/prometheus/prometheus/promql"
 )
 
-const (
-	downStreamErrType = "downstream error"
-)
-
 var (
 	nanosecondsInMillisecond = int64(time.Millisecond / time.Nanosecond)
 

@@ -278,7 +278,7 @@ func Test_FunctionParallelism(t *testing.T) {
 			result = strings.Replace(result, "}<fArgs>", "}[1m]<fArgs>", -1)
 		}
 
-		if fArgs != nil && len(fArgs) > 0 {
+		if len(fArgs) > 0 {
 			args := "," + strings.Join(fArgs, ",")
 			result = strings.Replace(result, "<fArgs>", args, -1)
 		} else {

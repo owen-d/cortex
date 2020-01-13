@@ -206,7 +206,7 @@ func (c *Fetcher) processCacheResponse(ctx context.Context, chunks []Chunk, keys
 		responses = make(chan decodeResponse)
 		missing   []Chunk
 	)
-	log, ctx := spanlogger.New(ctx, "Fetcher.processCacheResponse")
+	log, _ := spanlogger.New(ctx, "Fetcher.processCacheResponse")
 	defer log.Span.Finish()
 
 	i, j := 0, 0

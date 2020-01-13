@@ -87,7 +87,6 @@ func (q *DownstreamQuerier) handleEmbeddedQuery(encoded string) (storage.SeriesS
 				return
 			}
 			samplesCh <- streams
-			return
 		}(query)
 	}
 

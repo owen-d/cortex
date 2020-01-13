@@ -135,7 +135,8 @@ func (q *MockShardedQueryable) Select(
 	if shard != nil {
 		duration = duration / time.Duration(shard.Of)
 	}
-	remaining := tStart.Add(duration).Sub(time.Now())
+
+	remaining := time.Until(tStart.Add(duration))
 	if remaining > 0 {
 		time.Sleep(remaining)
 	}
