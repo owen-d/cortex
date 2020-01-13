@@ -192,15 +192,9 @@ func (cfg *SchemaConfig) loadFromFile() error {
 // Validate the schema config and returns an error if the validation
 // doesn't pass
 func (cfg *SchemaConfig) Validate() error {
-	for i, periodCfg := range cfg.Configs {
+	for _, periodCfg := range cfg.Configs {
 		if err := periodCfg.validate(); err != nil {
 			return err
-		}
-
-		// apply default row shards
-		if periodCfg.RowShards == 0 {
-			periodCfg.RowShards = defaultRowShards(periodCfg.Schema)
-			cfg.Configs[i] = periodCfg
 		}
 	}
 	return nil
@@ -321,6 +315,14 @@ func (cfg *SchemaConfig) Load() error {
 
 	if err != nil {
 		return err
+	}
+
+	for i, periodCfg := range cfg.Configs {
+		// apply default row shards
+		if periodCfg.RowShards == 0 {
+			periodCfg.RowShards = defaultRowShards(periodCfg.Schema)
+			cfg.Configs[i] = periodCfg
+		}
 	}
 
 	return cfg.Validate()
