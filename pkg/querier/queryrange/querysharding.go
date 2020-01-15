@@ -61,7 +61,13 @@ func mapQuery(mapper astmapper.ASTMapper, query string) (promql.Node, error) {
 }
 
 // NewQueryShardMiddleware creates a middleware which downstreams queries after AST mapping and query encoding.
-func NewQueryShardMiddleware(logger log.Logger, engine *promql.Engine, confs ShardingConfigs) (Middleware, Middleware) {
+func NewQueryShardMiddleware(
+	logger log.Logger,
+	engine *promql.Engine,
+	confs ShardingConfigs,
+	codec Codec,
+	minShardingLookback time.Duration,
+) Middleware {
 	passthrough := MiddlewareFunc(func(next Handler) Handler {
 		return next
 	})
@@ -74,7 +80,7 @@ func NewQueryShardMiddleware(logger log.Logger, engine *promql.Engine, confs Sha
 			"msg", "no configuration with shard found",
 			"confs", fmt.Sprintf("%+v", confs),
 		)
-		return passthrough, passthrough
+		return passthrough
 	}
 
 	getConf := func(r Request) (chunk.PeriodConfig, error) {
@@ -109,7 +115,15 @@ func NewQueryShardMiddleware(logger log.Logger, engine *promql.Engine, confs Sha
 		}
 	})
 
-	return mapperware, shardingware
+	return MiddlewareFunc(func(next Handler) Handler {
+		return &shardSplitter{
+			codec:               codec,
+			MinShardingLookback: minShardingLookback,
+			shardingware:        MergeMiddlewares(mapperware, shardingware).Wrap(next),
+			next:                next,
+		}
+	})
+
 }
 
 type astMapperware struct {
@@ -197,9 +211,95 @@ func (qs *queryShard) Do(ctx context.Context, r Request) (Response, error) {
 	}, nil
 }
 
+// shardSplitter middleware will only shard appropriate requests that do not extend past the MinShardingLookback interval.
+// This is used to send nonsharded requests to the ingesters in order to not overload them.
+type shardSplitter struct {
+	codec               Codec
+	MinShardingLookback time.Duration // delimiter for splitting sharded vs non-sharded queries
+	shardingware        Handler       // handler for sharded queries
+	next                Handler       // handler for non-sharded queries
+}
+
+func (splitter *shardSplitter) Do(ctx context.Context, r Request) (Response, error) {
+	cutoff := time.Now().Add(-splitter.MinShardingLookback)
+	sharded, nonsharded := partitionRequest(r, cutoff)
+
+	return splitter.parallel(ctx, sharded, nonsharded)
+
+}
+
+func (splitter *shardSplitter) parallel(ctx context.Context, sharded, nonsharded Request) (Response, error) {
+	if sharded == nil {
+		return splitter.next.Do(ctx, nonsharded)
+	}
+
+	if nonsharded == nil {
+		return splitter.shardingware.Do(ctx, sharded)
+	}
+
+	nonshardCh := make(chan Response, 1)
+	shardCh := make(chan Response, 1)
+	errCh := make(chan error, 2)
+
+	go func() {
+		res, err := splitter.next.Do(ctx, nonsharded)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		nonshardCh <- res
+
+	}()
+
+	go func() {
+		res, err := splitter.shardingware.Do(ctx, sharded)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		shardCh <- res
+	}()
+
+	resps := make([]Response, 0, 2)
+	for i := 0; i < 2; i++ {
+		select {
+		case r := <-nonshardCh:
+			resps = append(resps, r)
+		case r := <-shardCh:
+			resps = append(resps, r)
+		case err := <-errCh:
+			return nil, err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+
+	}
+
+	return splitter.codec.MergeResponse(resps...)
+}
+
+// partitionQuery splits a request into potentially multiple requests, one including the request's time range
+// [0,t). The other will include [t,inf)
+func partitionRequest(r Request, t time.Time) (before Request, after Request) {
+	boundary := TimeToMillis(t)
+	if r.GetStart() >= boundary {
+		return nil, r
+	}
+
+	if r.GetEnd() < boundary {
+		return r, nil
+	}
+
+	return r.WithStartEnd(r.GetStart(), boundary), r.WithStartEnd(boundary, r.GetEnd())
+}
+
 // TimeFromMillis is a helper to turn milliseconds -> time.Time
 func TimeFromMillis(ms int64) time.Time {
 	secs := ms / 1000
 	rem := ms - (secs * 1000)
 	return time.Unix(secs, rem*nanosecondsInMillisecond)
+}
+
+func TimeToMillis(t time.Time) int64 {
+	return t.UnixNano() / nanosecondsInMillisecond
 }

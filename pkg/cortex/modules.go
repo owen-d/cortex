@@ -348,6 +348,7 @@ func (t *Cortex) initQueryFrontend(cfg *Config) (err error) {
 			MaxSamples:    cfg.Querier.MaxSamples,
 			Timeout:       cfg.Querier.Timeout,
 		},
+		cfg.Querier.IngesterMaxQueryLookback,
 	)
 
 	if err != nil {

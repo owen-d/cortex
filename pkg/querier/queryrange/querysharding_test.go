@@ -81,7 +81,7 @@ func TestQueryshardingMiddleware(t *testing.T) {
 				Timeout:       time.Minute,
 			})
 
-			mapperware, shardingware := NewQueryShardMiddleware(
+			handler := NewQueryShardMiddleware(
 				log.NewNopLogger(),
 				engine,
 				ShardingConfigs{
@@ -89,8 +89,9 @@ func TestQueryshardingMiddleware(t *testing.T) {
 						RowShards: 3,
 					},
 				},
-			)
-			handler := MergeMiddlewares(mapperware, shardingware).Wrap(c.next)
+				PrometheusCodec,
+				0,
+			).Wrap(c.next)
 
 			// escape hatch for custom tests
 			if c.override != nil {
@@ -294,16 +295,20 @@ func parseDate(in string) model.Time {
 
 // mappingValidator can be injected into a middleware chain to assert that a query matches an expected query
 type mappingValidator struct {
-	t        *testing.T
 	expected string
 	next     Handler
 }
 
 func (v *mappingValidator) Do(ctx context.Context, req Request) (Response, error) {
 	expr, err := promql.ParseExpr(req.GetQuery())
-	require.Nil(v.t, err)
+	if err != nil {
+		return nil, err
+	}
 
-	require.Equal(v.t, v.expected, expr.String())
+	if v.expected != expr.String() {
+		return nil, errors.Errorf("bad query mapping: expected [%s], got [%s]", v.expected, expr.String())
+	}
+
 	return v.next.Do(ctx, req)
 }
 
@@ -371,16 +376,19 @@ func TestQueryshardingCorrectness(t *testing.T) {
 		},
 	} {
 		t.Run(tc.desc, func(t *testing.T) {
-			mapperware, shardingware := NewQueryShardMiddleware(
+			shardingConf := ShardingConfigs{
+				chunk.PeriodConfig{
+					Schema:    "v10",
+					RowShards: uint32(shardFactor),
+				},
+			}
+			shardingware := NewQueryShardMiddleware(
 				log.NewNopLogger(),
 				engine,
 				// ensure that all requests are shard compatbile
-				ShardingConfigs{
-					chunk.PeriodConfig{
-						Schema:    "v10",
-						RowShards: uint32(shardFactor),
-					},
-				},
+				shardingConf,
+				PrometheusCodec,
+				0,
 			)
 
 			downstream := &downstreamHandler{
@@ -390,20 +398,31 @@ func TestQueryshardingCorrectness(t *testing.T) {
 
 			assertionMWare := MiddlewareFunc(func(next Handler) Handler {
 				return &mappingValidator{
-					t:        t,
 					expected: tc.mapped,
 					next:     next,
 				}
 			})
 
-			shardedMWare := MergeMiddlewares(mapperware, assertionMWare, shardingware).Wrap(downstream)
-			passthrough := downstream
+			mapperware := MiddlewareFunc(func(next Handler) Handler {
+				return &astMapperware{
+					getConf: func(_ Request) (chunk.PeriodConfig, error) {
+						return shardingConf[0], nil
+					},
+					logger: log.NewNopLogger(),
+					next:   next,
+				}
+			})
 
 			r := req.WithQuery(tc.query)
-			shardedRes, err := shardedMWare.Do(context.Background(), r)
+
+			// ensure the expected ast mapping occurs
+			_, err := MergeMiddlewares(mapperware, assertionMWare).Wrap(downstream).Do(context.Background(), r)
 			require.Nil(t, err)
 
-			res, err := passthrough.Do(context.Background(), r)
+			shardedRes, err := shardingware.Wrap(downstream).Do(context.Background(), r)
+			require.Nil(t, err)
+
+			res, err := downstream.Do(context.Background(), r)
 			require.Nil(t, err)
 
 			approximatelyEquals(t, res.(*PrometheusResponse), shardedRes.(*PrometheusResponse))
@@ -495,7 +514,7 @@ func BenchmarkQuerySharding(b *testing.B) {
 			}
 
 			for _, shardFactor := range shards {
-				mapperware, shardingware := NewQueryShardMiddleware(
+				shardingware := NewQueryShardMiddleware(
 					log.NewNopLogger(),
 					engine,
 					// ensure that all requests are shard compatbile
@@ -505,9 +524,9 @@ func BenchmarkQuerySharding(b *testing.B) {
 							RowShards: shardFactor,
 						},
 					},
-				)
-
-				mware := MergeMiddlewares(mapperware, shardingware).Wrap(downstream)
+					PrometheusCodec,
+					0,
+				).Wrap(downstream)
 
 				b.Run(
 					fmt.Sprintf(
@@ -520,7 +539,7 @@ func BenchmarkQuerySharding(b *testing.B) {
 					),
 					func(b *testing.B) {
 						for n := 0; n < b.N; n++ {
-							_, err := mware.Do(
+							_, err := shardingware.Do(
 								context.Background(),
 								req,
 							)

@@ -57,6 +57,7 @@ func TestRoundTrip(t *testing.T) {
 			MaxSamples:    1000,
 			Timeout:       time.Minute,
 		},
+		0,
 	)
 
 	if err != nil {

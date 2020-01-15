@@ -102,23 +102,11 @@ func NewTripperware(
 	cacheExtractor Extractor,
 	schema chunk.SchemaConfig,
 	engineOpts promql.EngineOpts,
+	minShardingLookback time.Duration,
 ) (frontend.Tripperware, cache.Cache, error) {
 	queryRangeMiddleware := []Middleware{LimitsMiddleware(limits)}
 	if cfg.AlignQueriesWithStep {
 		queryRangeMiddleware = append(queryRangeMiddleware, InstrumentMiddleware("step_align"), StepAlignMiddleware)
-	}
-
-	var shardingware Middleware
-	if cfg.SumShards {
-		var mapperware Middleware
-		mapperware, shardingware = NewQueryShardMiddleware(log, promql.NewEngine(engineOpts), schema.Configs)
-
-		// only add mapperware at this point -- shardingware will be added after splitting/caching/retry middlewares.
-		queryRangeMiddleware = append(
-			queryRangeMiddleware,
-			InstrumentMiddleware("sum_shards.astMapperware"),
-			mapperware,
-		)
 	}
 
 	// SplitQueriesByDay is deprecated use SplitQueriesByInterval.
@@ -139,17 +127,25 @@ func NewTripperware(
 		c = cache
 		queryRangeMiddleware = append(queryRangeMiddleware, InstrumentMiddleware("results_cache"), queryCacheMiddleware)
 	}
-	if cfg.MaxRetries > 0 {
-		queryRangeMiddleware = append(queryRangeMiddleware, InstrumentMiddleware("retry"), NewRetryMiddleware(log, cfg.MaxRetries))
-	}
 
-	// the other half of the query sharding middleware should be added at the end of the middleware chain
-	if shardingware != nil {
+	if cfg.SumShards {
+		shardingware := NewQueryShardMiddleware(
+			log,
+			promql.NewEngine(engineOpts),
+			schema.Configs,
+			codec,
+			minShardingLookback,
+		)
+
 		queryRangeMiddleware = append(
 			queryRangeMiddleware,
-			InstrumentMiddleware("sum_shards.queryShard"),
+			InstrumentMiddleware("sum_shards"),
 			shardingware,
 		)
+	}
+
+	if cfg.MaxRetries > 0 {
+		queryRangeMiddleware = append(queryRangeMiddleware, InstrumentMiddleware("retry"), NewRetryMiddleware(log, cfg.MaxRetries))
 	}
 
 	return frontend.Tripperware(func(next http.RoundTripper) http.RoundTripper {
