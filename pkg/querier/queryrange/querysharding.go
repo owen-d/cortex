@@ -120,6 +120,7 @@ func NewQueryShardMiddleware(
 			codec:               codec,
 			MinShardingLookback: minShardingLookback,
 			shardingware:        MergeMiddlewares(mapperware, shardingware).Wrap(next),
+			now:                 time.Now,
 			next:                next,
 		}
 	})
@@ -215,13 +216,14 @@ func (qs *queryShard) Do(ctx context.Context, r Request) (Response, error) {
 // This is used to send nonsharded requests to the ingesters in order to not overload them.
 type shardSplitter struct {
 	codec               Codec
-	MinShardingLookback time.Duration // delimiter for splitting sharded vs non-sharded queries
-	shardingware        Handler       // handler for sharded queries
-	next                Handler       // handler for non-sharded queries
+	MinShardingLookback time.Duration    // delimiter for splitting sharded vs non-sharded queries
+	shardingware        Handler          // handler for sharded queries
+	next                Handler          // handler for non-sharded queries
+	now                 func() time.Time // injectable time.Now
 }
 
 func (splitter *shardSplitter) Do(ctx context.Context, r Request) (Response, error) {
-	cutoff := time.Now().Add(-splitter.MinShardingLookback)
+	cutoff := splitter.now().Add(-splitter.MinShardingLookback)
 	sharded, nonsharded := partitionRequest(r, cutoff)
 
 	return splitter.parallel(ctx, sharded, nonsharded)

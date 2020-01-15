@@ -430,6 +430,47 @@ func TestQueryshardingCorrectness(t *testing.T) {
 	}
 }
 
+func TestShardSplitting(t *testing.T) {
+
+	req := &PrometheusRequest{
+		Path:  "/query_range",
+		Start: start.UnixNano() / nanosecondsInMillisecond,
+		End:   end.UnixNano() / nanosecondsInMillisecond,
+		Step:  int64(step) / int64(time.Second),
+		Query: "sum(rate(bar1[1m]))",
+	}
+
+	shardingware := NewQueryShardMiddleware(
+		log.NewNopLogger(),
+		engine,
+		// ensure that all requests are shard compatbile
+		ShardingConfigs{
+			chunk.PeriodConfig{
+				Schema:    "v10",
+				RowShards: uint32(2),
+			},
+		},
+		PrometheusCodec,
+		end.Sub(start)/2, // shard 1/2 of the req
+	)
+
+	downstream := &downstreamHandler{
+		engine:    engine,
+		queryable: shardAwareQueryable,
+	}
+
+	handler := shardingware.Wrap(downstream).(*shardSplitter)
+	handler.now = func() time.Time { return end } // make the split cut the request in half (don't use time.Now)
+
+	resp, err := handler.Do(context.Background(), req)
+	require.Nil(t, err)
+
+	unaltered, err := downstream.Do(context.Background(), req)
+	require.Nil(t, err)
+
+	approximatelyEquals(t, unaltered.(*PrometheusResponse), resp.(*PrometheusResponse))
+}
+
 func BenchmarkQuerySharding(b *testing.B) {
 
 	var shards []uint32
