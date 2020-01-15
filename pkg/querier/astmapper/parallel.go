@@ -14,7 +14,12 @@ var summableAggregates = map[promql.ItemType]struct{}{
 	promql.ItemCount:   {},
 }
 
-// CanParallel tests is a subtree is parallelizable..
+var nonParallelFuncs = []string{
+	"histogram_quantile",
+	"quantile_over_time",
+}
+
+// CanParallel tests if a subtree is parallelizable.
 // A subtree is parallelizable if all of its components are parallelizable.
 func CanParallel(node promql.Node) bool {
 	switch n := node.(type) {
@@ -77,12 +82,8 @@ func CanParallel(node promql.Node) bool {
 
 // ParallelFunc ensures that a promql function can be part of a parallel query.
 func ParallelFunc(f promql.Function) bool {
-	unallowed := []string{
-		"histogram_quantile",
-		"quantile_over_time",
-	}
 
-	for _, v := range unallowed {
+	for _, v := range nonParallelFuncs {
 		if v == f.Name {
 			return false
 		}

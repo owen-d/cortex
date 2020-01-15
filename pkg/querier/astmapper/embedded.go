@@ -73,7 +73,7 @@ func Squash(codec Codec, isMatrix bool, nodes ...promql.Node) (promql.Expr, erro
 	}
 
 	// concat OR legs
-	var strs []string
+	strs := make([]string, 0, len(nodes))
 	for _, node := range nodes {
 		strs = append(strs, node.String())
 	}
