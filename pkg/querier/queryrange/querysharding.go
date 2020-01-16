@@ -119,9 +119,13 @@ func NewQueryShardMiddleware(
 		return &shardSplitter{
 			codec:               codec,
 			MinShardingLookback: minShardingLookback,
-			shardingware:        MergeMiddlewares(mapperware, shardingware).Wrap(next),
-			now:                 time.Now,
-			next:                next,
+			shardingware: MergeMiddlewares(
+				InstrumentMiddleware("shardingware"),
+				mapperware,
+				shardingware,
+			).Wrap(next),
+			now:  time.Now,
+			next: InstrumentMiddleware("sharding-bypass").Wrap(next),
 		}
 	})
 

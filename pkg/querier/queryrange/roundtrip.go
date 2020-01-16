@@ -139,8 +139,7 @@ func NewTripperware(
 
 		queryRangeMiddleware = append(
 			queryRangeMiddleware,
-			InstrumentMiddleware("sum_shards"),
-			shardingware,
+			shardingware, // instrumentation is included in the sharding middleware
 		)
 	}
 
