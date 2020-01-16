@@ -12,6 +12,7 @@ import (
 
 	"github.com/cortexproject/cortex/pkg/chunk"
 	"github.com/cortexproject/cortex/pkg/util"
+	"github.com/go-kit/kit/log"
 	"github.com/prometheus/prometheus/promql"
 	"github.com/stretchr/testify/require"
 	"github.com/weaveworks/common/middleware"
@@ -102,4 +103,19 @@ func (s singleHostRoundTripper) RoundTrip(r *http.Request) (*http.Response, erro
 	r.URL.Scheme = "http"
 	r.URL.Host = s.host
 	return s.next.RoundTrip(r)
+}
+
+func Test_ShardingConfigError(t *testing.T) {
+	_, _, err := NewTripperware(
+		Config{SumShards: true},
+		log.NewNopLogger(),
+		nil,
+		nil,
+		nil,
+		chunk.SchemaConfig{},
+		promql.EngineOpts{},
+		0,
+	)
+
+	require.EqualError(t, err, "a non-zero value is required for querier.query-ingesters-within when querier.sum-shards is enabled")
 }
