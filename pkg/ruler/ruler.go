@@ -161,8 +161,9 @@ type Ruler struct {
 
 	store          rules.RuleStore
 	mapper         *mapper
+	ManagerCreator ManagerCreator
 	userManagerMtx sync.Mutex
-	userManagers   map[string]*promRules.Manager
+	userManagers   map[string]UserManager
 
 	// Per-user notifiers with separate queues.
 	notifiersMtx sync.Mutex
@@ -194,10 +195,12 @@ func NewRuler(cfg Config, engine *promql.Engine, queryable promStorage.Queryable
 		store:        ruleStore,
 		pusher:       pusher,
 		mapper:       newMapper(cfg.RulePath, logger),
-		userManagers: map[string]*promRules.Manager{},
+		userManagers: map[string]UserManager{},
 		registry:     reg,
 		logger:       logger,
 	}
+
+	ruler.ManagerCreator = PrometheusManagerCreator(ruler)
 
 	if cfg.EnableSharding {
 		ringStore, err := kv.NewClient(
@@ -278,7 +281,7 @@ func (r *Ruler) stopping(_ error) error {
 	for user, manager := range r.userManagers {
 		level.Debug(r.logger).Log("msg", "shutting down user  manager", "user", user)
 		wg.Add(1)
-		go func(manager *promRules.Manager, user string) {
+		go func(manager UserManager, user string) {
 			manager.Stop()
 			wg.Done()
 			level.Debug(r.logger).Log("msg", "user manager shut down", "user", user)
@@ -290,11 +293,11 @@ func (r *Ruler) stopping(_ error) error {
 	return nil
 }
 
-// sendAlerts implements a rules.NotifyFunc for a Notifier.
+// SendAlerts implements a rules.NotifyFunc for a Notifier.
 // It filters any non-firing alerts from the input.
 //
 // Copied from Prometheus's main.go.
-func sendAlerts(n *notifier.Manager, externalURL string) promRules.NotifyFunc {
+func SendAlerts(n *notifier.Manager, externalURL string) promRules.NotifyFunc {
 	return func(ctx context.Context, expr string, alerts ...*promRules.Alert) {
 		var res []*notifier.Alert
 
@@ -519,30 +522,13 @@ func (r *Ruler) syncManager(ctx context.Context, user string, groups store.RuleG
 
 // newManager creates a prometheus rule manager wrapped with a user id
 // configured storage, appendable, notifier, and instrumentation
-func (r *Ruler) newManager(ctx context.Context, userID string) (*promRules.Manager, error) {
+func (r *Ruler) newManager(ctx context.Context, userID string) (UserManager, error) {
 	notifier, err := r.getOrCreateNotifier(userID)
 	if err != nil {
 		return nil, err
 	}
 
-	// Wrap registerer with userID and cortex_ prefix
-	reg := prometheus.WrapRegistererWith(prometheus.Labels{"user": userID}, r.registry)
-	reg = prometheus.WrapRegistererWithPrefix("cortex_", reg)
-	logger := log.With(r.logger, "user", userID)
-	opts := &promRules.ManagerOptions{
-		Appendable:      &appender{pusher: r.pusher, userID: userID},
-		Queryable:       r.queryable,
-		QueryFunc:       engineQueryFunc(r.engine, r.queryable, r.cfg.EvaluationDelay),
-		Context:         user.InjectOrgID(ctx, userID),
-		ExternalURL:     r.alertURL,
-		NotifyFunc:      sendAlerts(notifier, r.alertURL.String()),
-		Logger:          logger,
-		Registerer:      reg,
-		OutageTolerance: r.cfg.OutageTolerance,
-		ForGracePeriod:  r.cfg.ForGracePeriod,
-		ResendDelay:     r.cfg.ResendDelay,
-	}
-	return promRules.NewManager(opts), nil
+	return r.ManagerCreator.NewManager(ctx, notifier, userID)
 }
 
 // GetRules retrieves the running rules from this ruler and all running rulers in the ring if
