@@ -200,7 +200,7 @@ func NewRuler(cfg Config, engine *promql.Engine, queryable promStorage.Queryable
 		logger:       logger,
 	}
 
-	ruler.ManagerCreator = PrometheusManagerCreator(ruler)
+	ruler.ManagerCreator = ruler
 
 	if cfg.EnableSharding {
 		ringStore, err := kv.NewClient(
@@ -324,7 +324,8 @@ func SendAlerts(n *notifier.Manager, externalURL string) promRules.NotifyFunc {
 	}
 }
 
-func (r *Ruler) getOrCreateNotifier(userID string) (*notifier.Manager, error) {
+// GetOrCreateNotifier returns a notifier manager for a tenant.
+func (r *Ruler) GetOrCreateNotifier(userID string) (*notifier.Manager, error) {
 	r.notifiersMtx.Lock()
 	defer r.notifiersMtx.Unlock()
 
@@ -483,6 +484,35 @@ func (r *Ruler) loadRules(ctx context.Context) {
 
 }
 
+// NewManager implements rules.ManagerCreator
+// It creates a prometheus rule manager wrapped with a user id
+// configured storage, appendable, notifier, and instrumentation
+func (r *Ruler) NewManager(ctx context.Context, userID string) (UserManager, error) {
+	notifier, err := r.GetOrCreateNotifier(userID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Wrap registerer with userID and cortex_ prefix
+	reg := prometheus.WrapRegistererWith(prometheus.Labels{"user": userID}, r.registry)
+	reg = prometheus.WrapRegistererWithPrefix("cortex_", reg)
+	logger := log.With(r.logger, "user", userID)
+	opts := &promRules.ManagerOptions{
+		Appendable:      &appender{pusher: r.pusher, userID: userID},
+		Queryable:       r.queryable,
+		QueryFunc:       engineQueryFunc(r.engine, r.queryable, r.cfg.EvaluationDelay),
+		Context:         user.InjectOrgID(ctx, userID),
+		ExternalURL:     r.alertURL,
+		NotifyFunc:      SendAlerts(notifier, r.alertURL.String()),
+		Logger:          logger,
+		Registerer:      reg,
+		OutageTolerance: r.cfg.OutageTolerance,
+		ForGracePeriod:  r.cfg.ForGracePeriod,
+		ResendDelay:     r.cfg.ResendDelay,
+	}
+	return promRules.NewManager(opts), nil
+}
+
 // syncManager maps the rule files to disk, detects any changes and will create/update the
 // the users Prometheus Rules Manager.
 func (r *Ruler) syncManager(ctx context.Context, user string, groups store.RuleGroupList) {
@@ -504,7 +534,7 @@ func (r *Ruler) syncManager(ctx context.Context, user string, groups store.RuleG
 		configUpdatesTotal.WithLabelValues(user).Inc()
 		manager, exists := r.userManagers[user]
 		if !exists {
-			manager, err = r.newManager(ctx, user)
+			manager, err = r.NewManager(ctx, user)
 			if err != nil {
 				level.Error(r.logger).Log("msg", "unable to create rule manager", "user", user, "err", err)
 				return
@@ -518,17 +548,6 @@ func (r *Ruler) syncManager(ctx context.Context, user string, groups store.RuleG
 			return
 		}
 	}
-}
-
-// newManager creates a prometheus rule manager wrapped with a user id
-// configured storage, appendable, notifier, and instrumentation
-func (r *Ruler) newManager(ctx context.Context, userID string) (UserManager, error) {
-	notifier, err := r.getOrCreateNotifier(userID)
-	if err != nil {
-		return nil, err
-	}
-
-	return r.ManagerCreator.NewManager(ctx, notifier, userID)
 }
 
 // GetRules retrieves the running rules from this ruler and all running rulers in the ring if

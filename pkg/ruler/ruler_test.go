@@ -123,7 +123,7 @@ func TestNotifierSendsUserIDHeader(t *testing.T) {
 	defer rcleanup()
 	defer services.StopAndAwaitTerminated(context.Background(), r) //nolint:errcheck
 
-	n, err := r.getOrCreateNotifier("1")
+	n, err := r.GetOrCreateNotifier("1")
 	require.NoError(t, err)
 
 	for _, not := range r.notifiers {
