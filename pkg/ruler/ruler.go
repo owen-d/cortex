@@ -510,7 +510,7 @@ func (r *Ruler) NewManager(ctx context.Context, userID string) (UserManager, err
 		ForGracePeriod:  r.cfg.ForGracePeriod,
 		ResendDelay:     r.cfg.ResendDelay,
 	}
-	return promRules.NewManager(opts), nil
+	return NewManagerAdapter(promRules.NewManager(opts)), nil
 }
 
 // syncManager maps the rule files to disk, detects any changes and will create/update the
@@ -566,7 +566,7 @@ func (r *Ruler) GetRules(ctx context.Context) ([]*GroupStateDesc, error) {
 }
 
 func (r *Ruler) getLocalRules(userID string) ([]*GroupStateDesc, error) {
-	var groups []*promRules.Group
+	var groups []Group
 	r.userManagerMtx.Lock()
 	if mngr, exists := r.userManagers[userID]; exists {
 		groups = mngr.RuleGroups()

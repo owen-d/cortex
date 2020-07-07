@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/prometheus/prometheus/pkg/labels"
-	promRules "github.com/prometheus/prometheus/rules"
+	"github.com/prometheus/prometheus/rules"
 )
 
 type ManagerCreator interface {
@@ -22,5 +22,32 @@ type UserManager interface {
 	Run()
 	Stop()
 	Update(interval time.Duration, files []string, externalLabels labels.Labels) error
-	RuleGroups() []*promRules.Group
+	RuleGroups() []Group
+}
+
+type managerAdapter struct {
+	*rules.Manager
+}
+
+func NewManagerAdapter(mgr *rules.Manager) UserManager {
+	return &managerAdapter{mgr}
+}
+
+func (m *managerAdapter) RuleGroups() []Group {
+	grps := m.Manager.RuleGroups()
+	result := make([]Group, 0, len(grps))
+	for _, g := range grps {
+		result = append(result, g)
+	}
+	return result
+
+}
+
+type Group interface {
+	Name() string
+	File() string
+	Interval() time.Duration
+	GetEvaluationTimestamp() time.Time
+	GetEvaluationDuration() time.Duration
+	Rules() []rules.Rule
 }
